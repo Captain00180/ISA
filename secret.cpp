@@ -5,6 +5,12 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <netinet/ip_icmp.h>
+#include <netinet/icmp6.h>
+#include <netinet/if_ether.h>
+#include <netinet/ip6.h>
+#include <sys/stat.h>
+#include <openssl/aes.h>
+#include <pcap.h>
 
 
 #define EXIT_SUCCESS 0
@@ -12,16 +18,59 @@
 
 #define MAX_PACKET_SIZE 1500
 
-typedef struct icmp_packet {
+typedef struct icmpv4_packet {
     struct icmphdr header;
-    char data[MAX_PACKET_SIZE - sizeof (struct icmphdr)];
-} icmp_packet;
+    char data[MAX_PACKET_SIZE - sizeof(struct icmphdr)];
+} icmpv4_packet;
+
+typedef struct icmpv6_packet {
+    struct icmp6_hdr header;
+    char data[MAX_PACKET_SIZE - sizeof(struct icmp6_hdr)];
+} icmpv6_packet;
+
+
+void initialize_icmpv4_packet(icmpv4_packet *pack) {
+    pack->header.checksum = 0;
+    pack->header.type = ICMP_ECHO;
+    pack->header.code = 0;
+}
+
+void initialize_icmpv6_packet(icmpv6_packet *pack) {
+    pack->header.icmp6_cksum = 0;
+    pack->header.icmp6_type = ICMP6_ECHO_REQUEST;
+    pack->header.icmp6_code = 0;
+}
 
 void exit_error(const char *msg) {
     fprintf(stderr, "%s", msg);
     exit(EXIT_ERROR);
 }
 
+void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char *data){
+
+
+    struct iphdr *iphdr = (struct iphdr*)(data + sizeof (struct ether_header));
+    struct ip6_hdr *ip6hdr = (struct ip6_hdr*)(data + sizeof (struct ether_header));
+    //printf("[%d]Packet received: Lenght=%d\n", iphdr->protocol, header->len);
+    if (iphdr->protocol == 1 || ip6hdr->ip6_ctlun.ip6_un1.ip6_un1_nxt != 0)
+    {
+        printf("[%d] / [%d]ICMP packet received! ...sniff sniff...\n", iphdr->protocol, ip6hdr->ip6_ctlun.ip6_un1.ip6_un1_nxt);
+
+    }
+}
+
+int server(){
+    pcap_t *device = NULL;
+    char errbuf [PCAP_ERRBUF_SIZE];
+
+    device = pcap_open_live("lo", 65535, 1, 1000, errbuf);
+    if (device == NULL){
+        fprintf(stderr, "Error: Pcap live open failed! [%s]\n", errbuf);
+        exit(1);
+    }
+    printf("Started sniffing\n");
+    pcap_loop(device, -1, handle_packet, NULL);
+}
 
 int main(int argc, char *argv[]) {
     // Determines whether the program is being executed as a client or server
@@ -69,14 +118,20 @@ int main(int argc, char *argv[]) {
 
 
     // '-r' and '-s' options are required
-    if (!l_flag && (!r_flag || !s_flag)) {
-        exit_error("Error: Missing arguments!\n");
-    }
+//    if (!l_flag && (!r_flag || !s_flag)) {
+//        exit_error("Error: Missing arguments!\n");
+//    }
 
     LISTEN_MODE = l_flag;
 
+    if (LISTEN_MODE)
+    {
+        server();
+        return 0;
+    }
+
     struct addrinfo hints{};
-    struct addrinfo *root = NULL;
+    struct addrinfo *server_address = NULL;
     /*                  *
      *    Preparation   *
      *                  */
@@ -84,39 +139,90 @@ int main(int argc, char *argv[]) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_RAW;
     // Get the server IP address from entered hostname/IP
-    if ((getaddrinfo(host, NULL, &hints, &root)) != 0) {
+    if ((getaddrinfo(host, NULL, &hints, &server_address)) != 0) {
         exit_error("Error: getaddrinfo() failed!\n");
     }
 
-    //char ip[50];
-    //struct sockaddr_in *;
-    //inet_ntop(root->ai_family, &(((struct sockaddr_in *) root->ai_addr)->sin_addr), ip, 100);
-    //printf("ip: %s\n", ip);
+    char ip[50];
+    inet_ntop(server_address->ai_family, &(((struct sockaddr_in *) server_address->ai_addr)->sin_addr), ip, 50);
+    printf("ip: %s\n", ip);
 
     // Create IPV4 and IPV6 sockets
     int sock_ipv4 = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     int sock_ipv6 = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
-    if (sock_ipv4 == -1 || sock_ipv6 == -1){
+    if (sock_ipv4 == -1 || sock_ipv6 == -1) {
         exit_error("Error: Couldn't create socket!\n");
     }
 
-    icmp_packet packet {};
-    packet.header.checksum = 0;
-    packet.header.type = ICMP_ECHO;
-    packet.header.code = 0;
+    icmpv4_packet packet_v4{};
+    initialize_icmpv4_packet(&packet_v4);
 
-    memcpy(packet.data, "Hello, world!", 13);
+    icmpv6_packet packet_v6{};
+    initialize_icmpv6_packet(&packet_v6);
 
-
-    if (sendto(sock_ipv4, &packet, sizeof(packet), 0, (struct sockaddr *) (root->ai_addr), root->ai_addrlen) == -1)
-    {
-        exit_error("Error: Couldn't send packet!\n");
+    FILE *input_file = fopen(file, "rb");
+    if (input_file == NULL) {
+        exit_error("Error: Couldn't open file!\n");
     }
 
-//    // Iterate through all addresses returned by getaddrinfo() and try to send the message
-//    while (root != NULL) {
+    // Get the size of the file
+    size_t file_size = strlen(file) * sizeof(char);
+    struct stat file_stats;
+
+    if (fstat(fileno(input_file), &file_stats) != 0){
+        exit_error("Error: Couldn't get file information!\n");
+    }
+    file_size += file_stats.st_size;
+
+    //unsigned char buff[100];
+    //fread(buff, 99, 1, input_file);
+    //printf("%s\n", buff);
+
+    // Iterate through all addresses returned by getaddrinfo() and try to send the first packet
+    // which contains metadata about the file (name and number of packets)
+    for (; server_address != NULL; server_address = server_address->ai_next) {
+        int res = 0;
+        if (server_address->ai_family == AF_INET) {
+            memcpy(packet_v4.data, file, strlen(file));
+            packet_v4.header.code = file_size;
+            res = sendto(sock_ipv4, &packet_v4, sizeof(packet_v4), 0, (struct sockaddr *) (server_address->ai_addr),
+                         server_address->ai_addrlen);
+        } else {
+            memcpy(packet_v6.data, file, strlen(file));
+            packet_v6.header.icmp6_code = file_size;
+            res = sendto(sock_ipv6, &packet_v6, sizeof(packet_v6), 0, (struct sockaddr *) (server_address->ai_addr),
+                         server_address->ai_addrlen);
+        }
+
+        if (res == -1) {
+            fprintf(stderr, "Error: Couldn't send packet!\n");
+            continue;
+        } else {
+            printf("Sendto success!\n");
+        }
+    }
+
+
+    // AES encryption
+//    const unsigned char message[] = "Hello, world!";
+//    const unsigned char user_key[] = "xjanus11";
 //
-//    }
+//    auto *out = static_cast<unsigned char *>(calloc(1, 150));
+//
+//    AES_KEY enc_key;
+//    AES_KEY dec_key;
+//
+//    AES_set_encrypt_key(user_key, 128, &enc_key);
+//    AES_set_decrypt_key(user_key, 128, &dec_key);
+//
+//    AES_encrypt(message, out, &enc_key);
+//    printf("Encrypted: %s\n", out);
+//
+//    AES_decrypt(out, out, &dec_key);
+//
+//    printf("Decrypted: %s\n", out);
+
+
 
     return 0;
 }
