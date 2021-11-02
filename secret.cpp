@@ -84,31 +84,29 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
 int server(){
     pcap_t *device = NULL;
     char errbuf [PCAP_ERRBUF_SIZE];
+    struct bpf_program filter;
 
     device = pcap_open_live("any", 65535, 1, 1000, errbuf);
     if (device == NULL){
         fprintf(stderr, "Error: Pcap live open failed! [%s]\n", errbuf);
         exit(1);
     }
+
+    if (pcap_compile(device, &filter, "icmp or icmp6", 0, PCAP_NETMASK_UNKNOWN) == -1){
+        exit_error("Error: Couldn't compile filter!\n");
+    }
+    if (pcap_setfilter(device, &filter) == -1){
+        exit_error("Error: Couldn't apply filter!\n");
+    }
     printf("Started sniffing\n");
     pcap_loop(device, -1, handle_packet, NULL);
 }
 
-int main(int argc, char *argv[]) {
-    // Determines whether the program is being executed as a client or server
-    int LISTEN_MODE = 0;
 
-    /*                  *
-     * Argument parsing *
-     *                  */
-
+void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char **host) {
     int r_flag = 0;
     int s_flag = 0;
     int l_flag = 0;
-
-    char *file = NULL;
-    char *host = NULL;
-
     int c;
     opterr = 0;
 
@@ -116,11 +114,11 @@ int main(int argc, char *argv[]) {
         switch (c) {
             case 'r':
                 r_flag = 1;
-                file = optarg;
+                *file = optarg;
                 break;
             case 's':
                 s_flag = 1;
-                host = optarg;
+                *host = optarg;
                 break;
             case 'l':
                 l_flag = 1;
@@ -129,45 +127,64 @@ int main(int argc, char *argv[]) {
                 exit_error("Error; Unexpected argument!\n");
         }
     }
-
-    //printf("rflag: %d - %s\nsflag: %d - %s \nlflag: %d\n", r_flag, file, s_flag, host, l_flag);
-    //printf("optind: %d", optind);
-
-    // '-l' option can't be used in combination with other options
-    if (l_flag && (r_flag || s_flag)) {
-        exit_error("Error: '-l'  option can't be used in combination with other options!\n");
+    //'-r' and '-s' options are required
+    if (!l_flag && (!r_flag || !s_flag)) {
+        exit_error("Error: Missing arguments!\n");
     }
 
+    *LISTEN_MODE = l_flag;
+}
 
-    // '-r' and '-s' options are required
-//    if (!l_flag && (!r_flag || !s_flag)) {
-//        exit_error("Error: Missing arguments!\n");
-//    }
+struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_address, int sock_ipv4, int sock_ipv6, icmpv4_packet packet_v4,
+                      icmpv6_packet packet_v6, size_t file_size) {
+    // Iterate through all addresses returned by getaddrinfo() and try to send the first packet
+    // which contains metadata about the file (name and number of packets)
+    for (; server_address != NULL; server_address = server_address->ai_next) {
+        int res = 0;
+        if (server_address->ai_family == AF_INET) {
+            // IPv4 address
+            // Packet data contains only file name
+            memcpy(packet_v4.data, file, strlen(file));
+            // Using the 'code' field of the header to communicate the file size to server
+            packet_v4.header.code = file_size + strlen(file);
+            // Send the message
+            res = sendto(sock_ipv4, &packet_v4, sizeof(packet_v4), 0, (struct sockaddr *) (server_address->ai_addr),
+                         server_address->ai_addrlen);
+        } else {
+            // IPv6 address
+            // Packet data contains only file name
+            memcpy(packet_v6.data, file, strlen(file));
+            // Using the 'code' field of the header to communicate the file size to server
+            packet_v6.header.icmp6_code = file_size + strlen(file);
+            // Send the message
+            res = sendto(sock_ipv6, &packet_v6, sizeof(packet_v6), 0, (struct sockaddr *) (server_address->ai_addr),
+                         server_address->ai_addrlen);
+        }
 
-    LISTEN_MODE = l_flag;
-
-    if (LISTEN_MODE)
-    {
-        server();
-        return 0;
+        if (res == -1) {
+            // Packet couldn't be sent. Try the next server address
+            fprintf(stderr, "Error: Couldn't send packet! Trying the next address...\n");
+            continue;
+        } else {
+            // Packet was successfully sent. Use this address for the rest of the communication
+            break;
+        }
     }
+    return server_address;
+}
 
-    struct addrinfo hints{};
-    struct addrinfo *server_address = NULL;
-    /*                  *
-     *    Preparation   *
-     *                  */
+int client(const char *file, const char *host) {
+    struct addrinfo hints;
     memset(&hints, 0, sizeof(struct addrinfo));
+    // Support IPv4 and IPv6 addresses
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_RAW;
+
+    struct addrinfo *server_address = NULL;
     // Get the server IP address from entered hostname/IP
     if ((getaddrinfo(host, NULL, &hints, &server_address)) != 0) {
         exit_error("Error: getaddrinfo() failed!\n");
     }
-
-    char ip[50];
-    inet_ntop(server_address->ai_family, &(((struct sockaddr_in *) server_address->ai_addr)->sin_addr), ip, 50);
-    printf("ip: %s\n", ip);
 
     // Create IPV4 and IPV6 sockets
     int sock_ipv4 = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
@@ -176,54 +193,70 @@ int main(int argc, char *argv[]) {
         exit_error("Error: Couldn't create socket!\n");
     }
 
+    // Prepare icmpv4 and icmpv6 packets. They contain a icmp header and
+    // a data buffer
+    // Depending on the server address from getaddrinfo(), icmpv4 or v6 packet
+    // will be used for the communication
     icmpv4_packet packet_v4{};
     initialize_icmpv4_packet(&packet_v4);
 
     icmpv6_packet packet_v6{};
     initialize_icmpv6_packet(&packet_v6);
 
+    // Open the source file
     FILE *input_file = fopen(file, "rb");
     if (input_file == NULL) {
         exit_error("Error: Couldn't open file!\n");
     }
 
-    // Get the size of the file
-    size_t file_size = strlen(file) * sizeof(char);
-    struct stat file_stats;
+    // Get the size of the file. Sum it up with the file name for payload length
 
+    struct stat file_stats{};
     if (fstat(fileno(input_file), &file_stats) != 0){
         exit_error("Error: Couldn't get file information!\n");
     }
-    file_size += file_stats.st_size;
+    size_t file_size =  file_stats.st_size;
 
     //unsigned char buff[100];
-    //fread(buff, 99, 1, input_file);
-    //printf("%s\n", buff);
+//fread(buff, 99, 1, input_file);
+//printf("%s\n", buff);
 
-    // Iterate through all addresses returned by getaddrinfo() and try to send the first packet
-    // which contains metadata about the file (name and number of packets)
-    for (; server_address != NULL; server_address = server_address->ai_next) {
-        int res = 0;
-        if (server_address->ai_family == AF_INET) {
-            memcpy(packet_v4.data, file, strlen(file));
-            packet_v4.header.code = file_size;
-            res = sendto(sock_ipv4, &packet_v4, sizeof(packet_v4), 0, (struct sockaddr *) (server_address->ai_addr),
-                         server_address->ai_addrlen);
-        } else {
-            memcpy(packet_v6.data, file, strlen(file));
-            packet_v6.header.icmp6_code = file_size;
-            res = sendto(sock_ipv6, &packet_v6, sizeof(packet_v6), 0, (struct sockaddr *) (server_address->ai_addr),
-                         server_address->ai_addrlen);
-        }
+    // Send the first packet, containing file name and file size
+    server_address = send_meta_packet(file, server_address, sock_ipv4, sock_ipv6, packet_v4, packet_v6, file_size);
 
-        if (res == -1) {
-            fprintf(stderr, "Error: Couldn't send packet!\n");
-            continue;
-        } else {
-            printf("Sendto success!\n");
+    if (server_address == NULL){
+        exit_error("Error: Couldn't reach the server!\n");
+    }
+    // Buffer which holds data from the file
+    unsigned char buff[MAX_PACKET_SIZE] = {0};
+    size_t n_of_bytes = 0;
+    size_t max_data_len = MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr);
+    while(file_size > 0){
+        n_of_bytes = (file_size >  max_data_len) ? max_data_len : file_size;
+        if (fread(buff, 1, n_of_bytes, input_file) != n_of_bytes){
+            exit_error("Error reading file!\n");
         }
+        file_size -= n_of_bytes;
+        printf("Data - %s\n", buff);
+    }
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    // Determines whether the program is being executed as a client or server
+    int LISTEN_MODE = 0;
+    char *file = NULL;
+    char *host = NULL;
+
+    parse_arguments(argc, argv, &LISTEN_MODE, &file, &host);
+
+    if (LISTEN_MODE)
+    {
+        server();
+        return 0;
     }
 
+    client(file, host);
 
     // AES encryption
 //    const unsigned char message[] = "Hello, world!";

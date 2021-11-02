@@ -1,5 +1,5 @@
 CXX = g++
-CPFLAGS = -Wall -Wextra -pedantic -g -O3
+CPFLAGS = -Wall -Wextra -pedantic -g
 CPLIBS = -lssl -lcrypto -lpcap
 
 all: secret
