@@ -20,12 +20,12 @@
 
 typedef struct icmpv4_packet {
     struct icmphdr header;
-    char data[MAX_PACKET_SIZE - sizeof(struct icmphdr)];
+    char data[MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr)];
 } icmpv4_packet;
 
 typedef struct icmpv6_packet {
     struct icmp6_hdr header;
-    char data[MAX_PACKET_SIZE - sizeof(struct icmp6_hdr)];
+    char data[MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr)];
 } icmpv6_packet;
 
 
@@ -48,22 +48,44 @@ void exit_error(const char *msg) {
 
 void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char *data){
 
+    // Points to the beginning of the IP header.
+    // Capturing on 'any' device causes pcap to replace a 14B ethernet header with a
+    // 16B 'cooked header'. This skips the header and gets to the start of the IP header
+    uint8_t *iphdr_start = (uint8_t *) (data + 16);
+    // Gets the first 8 bits of the IP header, applies a mask to extract
+    // the first 4 bits ( 240d == 11110000b ) and shifts it to get the first
+    // 4 bits as a number
+    uint8_t protocol_version = (240 & *iphdr_start) >> 4;
 
-    struct iphdr *iphdr = (struct iphdr*)(data + sizeof (struct ether_header));
-    struct ip6_hdr *ip6hdr = (struct ip6_hdr*)(data + sizeof (struct ether_header));
-    //printf("[%d]Packet received: Lenght=%d\n", iphdr->protocol, header->len);
-    if (iphdr->protocol == 1 || ip6hdr->ip6_ctlun.ip6_un1.ip6_un1_nxt != 0)
-    {
-        printf("[%d] / [%d]ICMP packet received! ...sniff sniff...\n", iphdr->protocol, ip6hdr->ip6_ctlun.ip6_un1.ip6_un1_nxt);
+    if (protocol_version == 4){
+        struct iphdr *iphdr = (struct iphdr*)(data + 16);
+        if (iphdr->protocol == 1)
+        {
+            printf("ICMP packet caught!\n");
+            icmpv4_packet *packet = (icmpv4_packet *) ( ((char*)iphdr) + sizeof (struct iphdr));
+            printf("Packet contents: \nFile size = %d\nFile name = %s\n", packet->header.code, packet->data);
 
+        }
     }
+    else if (protocol_version == 6)
+    {
+        struct ip6_hdr *ip6hdr = (struct ip6_hdr*)(data + 16);
+        if (ip6hdr->ip6_ctlun.ip6_un1.ip6_un1_nxt == 58)
+        {
+            printf("ICMPv6 packet caught!\n");
+            icmpv6_packet *packet = (icmpv6_packet *) ( ((char*)ip6hdr) + sizeof (struct ip6_hdr));
+            printf("Packet contents: \nFile size = %d\nFile name = %s\n", packet->header.icmp6_code, packet->data);
+        }
+    }
+
+
 }
 
 int server(){
     pcap_t *device = NULL;
     char errbuf [PCAP_ERRBUF_SIZE];
 
-    device = pcap_open_live("lo", 65535, 1, 1000, errbuf);
+    device = pcap_open_live("any", 65535, 1, 1000, errbuf);
     if (device == NULL){
         fprintf(stderr, "Error: Pcap live open failed! [%s]\n", errbuf);
         exit(1);
