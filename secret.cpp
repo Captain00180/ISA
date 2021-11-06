@@ -11,21 +11,34 @@
 #include <sys/stat.h>
 #include <openssl/aes.h>
 #include <pcap.h>
-
+#include <libgen.h>
+#include <unistd.h>
+#include <fstream>
 
 #define EXIT_SUCCESS 0
 #define EXIT_ERROR 1
 
+#define START_TRANSMISSION 31
+#define END_TRANSMISSION 42
+
 #define MAX_PACKET_SIZE 1500
+#define MAX_PAYLOAD_LEN_IPV4 (MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr))
+#define MAX_PAYLOAD_LEN_IPV6 (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr))
+
+char * RECEIVE_BUFFER = NULL;
+char * FILE_NAME = NULL;
+int FILE_SIZE = 0;
+int PACKETS_RECEIVED = 0;
+int PACKETS_SENT = 1;
 
 typedef struct icmpv4_packet {
     struct icmphdr header;
-    char data[MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr)];
+    char data[MAX_PAYLOAD_LEN_IPV4];
 } icmpv4_packet;
 
 typedef struct icmpv6_packet {
     struct icmp6_hdr header;
-    char data[MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr)];
+    char data[MAX_PAYLOAD_LEN_IPV6];
 } icmpv6_packet;
 
 
@@ -61,9 +74,42 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
         struct iphdr *iphdr = (struct iphdr*)(data + 16);
         if (iphdr->protocol == 1)
         {
-            printf("ICMP packet caught!\n");
+            //printf("ICMP packet caught!\n");
             icmpv4_packet *packet = (icmpv4_packet *) ( ((char*)iphdr) + sizeof (struct iphdr));
-            printf("Packet contents: \nFile size = %d\nFile name = %s\n", packet->header.code, packet->data);
+            //printf("Packet contents: \nFile size = %d\nFile name = %s\n", packet->header.un.echo.id, packet->data);
+            // First packet of the transmission - allocate buffer
+            if (packet->header.code == START_TRANSMISSION)
+            {
+                // packet->header.un.echo.id of the first packet contains the size of the file
+                RECEIVE_BUFFER = (char*) (calloc(1, packet->header.un.echo.id));
+                FILE_NAME = (char*) (calloc(1, strlen(packet->data)));
+                if (RECEIVE_BUFFER == NULL || FILE_NAME == NULL)
+                {
+                    exit_error("Error: Couldn't allocate server buffers!\n");
+                }
+                memcpy(FILE_NAME, packet->data, strlen(packet->data));
+            }
+            else if(packet->header.code == END_TRANSMISSION)
+            {
+                FILE * output = fopen(FILE_NAME, "w");
+                if (output == NULL)
+                {
+                    exit_error("Error: Couldn't create output file!\n");
+                }
+                if (fputs(RECEIVE_BUFFER, output) != 0)
+                {
+                    exit_error("Error: Couldn't write to file!\n");
+                }
+                fclose(output);
+                free(RECEIVE_BUFFER);
+                RECEIVE_BUFFER = NULL;
+                free(FILE_NAME);
+                FILE_NAME = NULL;
+            }
+            else
+            {
+                strcat(RECEIVE_BUFFER, packet->data);
+            }
 
         }
     }
@@ -72,16 +118,58 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
         struct ip6_hdr *ip6hdr = (struct ip6_hdr*)(data + 16);
         if (ip6hdr->ip6_ctlun.ip6_un1.ip6_un1_nxt == 58)
         {
-            printf("ICMPv6 packet caught!\n");
+            //printf("ICMPv6 packet caught!\n");
             icmpv6_packet *packet = (icmpv6_packet *) ( ((char*)ip6hdr) + sizeof (struct ip6_hdr));
-            printf("Packet contents: \nFile size = %d\nFile name = %s\n", packet->header.icmp6_code, packet->data);
+            if (packet->header.icmp6_type == ICMP6_ECHO_REQUEST) {
+                PACKETS_RECEIVED++;
+                //printf("Packet contents: \nFile size = %d\nFile name = %s\n", packet->header.icmp6_dataun.icmp6_un_data32[0], packet->data);
+                if (packet->header.icmp6_code == START_TRANSMISSION) {
+                    // packet->header.icmp6_dataun.icmp6_un_data32[0] of the first packet contains the size of the file
+                    RECEIVE_BUFFER = (char *) (calloc(1, packet->header.icmp6_dataun.icmp6_un_data32[0]));
+                    FILE_SIZE = packet->header.icmp6_dataun.icmp6_un_data32[0];
+                    FILE_NAME = (char *) (calloc(1, strlen(packet->data)));
+                    if (RECEIVE_BUFFER == NULL || FILE_NAME == NULL) {
+                        exit_error("Error: Couldn't allocate server buffers!\n");
+                    }
+                    memcpy(FILE_NAME, basename(packet->data), strlen(basename(packet->data)));
+                } else if (packet->header.icmp6_code == END_TRANSMISSION) {
+
+                    strncat(RECEIVE_BUFFER, packet->data, packet->header.icmp6_dataun.icmp6_un_data32[0]);
+
+                    std::ofstream output;
+                    output.open(FILE_NAME, std::ios::binary | std::ios::out);
+                    if (!output.is_open())
+                    {
+                        exit_error("Error: Couldn't create output file!\n");
+                    }
+                    output.write(RECEIVE_BUFFER, FILE_SIZE - strlen(FILE_NAME));
+//
+//                    FILE *output = fopen(FILE_NAME, "w+");
+//                    if (output == NULL) {
+//                        exit_error("Error: Couldn't create output file!\n");
+//                    }
+//                    if (fputs(RECEIVE_BUFFER, output) < 0) {
+//                        exit_error("Error: Couldn't write to file! \n");
+//                    }
+//                    fclose(output);
+                    free(RECEIVE_BUFFER);
+                    RECEIVE_BUFFER = NULL;
+                    free(FILE_NAME);
+                    FILE_NAME = NULL;
+                    //printf("RECEVIED%d\n", PACKETS_RECEIVED);
+                } else {
+                    printf("Packet #%d \n", PACKETS_RECEIVED);
+                    strncat(RECEIVE_BUFFER, packet->data, packet->header.icmp6_dataun.icmp6_un_data32[0]);
+
+                }
+            }
         }
     }
 
 
 }
 
-int server(){
+void server(){
     pcap_t *device = NULL;
     char errbuf [PCAP_ERRBUF_SIZE];
     struct bpf_program filter;
@@ -145,20 +233,26 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
             // IPv4 address
             // Packet data contains only file name
             memcpy(packet_v4.data, file, strlen(file));
-            // Using the 'code' field of the header to communicate the file size to server
-            packet_v4.header.code = file_size + strlen(file);
+            // Using the 'echo.id' field of the header to communicate the file size to server
+            packet_v4.header.un.echo.id = file_size + strlen(file);
+            // Using the 'code' field of the header to indicate start/end of file transmission
+            packet_v4.header.code = START_TRANSMISSION;
             // Send the message
             res = sendto(sock_ipv4, &packet_v4, sizeof(packet_v4), 0, (struct sockaddr *) (server_address->ai_addr),
                          server_address->ai_addrlen);
+            memset(packet_v4.data, 0, MAX_PAYLOAD_LEN_IPV4);
         } else {
             // IPv6 address
             // Packet data contains only file name
             memcpy(packet_v6.data, file, strlen(file));
-            // Using the 'code' field of the header to communicate the file size to server
-            packet_v6.header.icmp6_code = file_size + strlen(file);
+            // Using the 'data32' field of the header to communicate the file size to server
+            packet_v6.header.icmp6_dataun.icmp6_un_data32[0] = file_size + strlen(file);
+            // Using the 'code' field of the header to indicate start/end of file transmission
+            packet_v6.header.icmp6_code = START_TRANSMISSION;
             // Send the message
             res = sendto(sock_ipv6, &packet_v6, sizeof(packet_v6), 0, (struct sockaddr *) (server_address->ai_addr),
                          server_address->ai_addrlen);
+            memset(packet_v6.data, 0, MAX_PAYLOAD_LEN_IPV6);
         }
 
         if (res == -1) {
@@ -228,17 +322,50 @@ int client(const char *file, const char *host) {
         exit_error("Error: Couldn't reach the server!\n");
     }
     // Buffer which holds data from the file
-    unsigned char buff[MAX_PACKET_SIZE] = {0};
     size_t n_of_bytes = 0;
-    size_t max_data_len = MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr);
+    size_t max_data_len = MAX_PAYLOAD_LEN_IPV6;
     while(file_size > 0){
+        unsigned char buff[MAX_PACKET_SIZE] = {0};
+        //printf("________________________NEW PACKET__________________\n");
         n_of_bytes = (file_size >  max_data_len) ? max_data_len : file_size;
+        file_size -= n_of_bytes;
         if (fread(buff, 1, n_of_bytes, input_file) != n_of_bytes){
             exit_error("Error reading file!\n");
         }
-        file_size -= n_of_bytes;
-        printf("Data - %s\n", buff);
+        // IPv4
+        if (server_address->ai_family == AF_INET)
+        {
+            if (file_size == 0){
+                packet_v4.header.code = END_TRANSMISSION;
+            }
+            memcpy(packet_v4.data, buff, n_of_bytes);
+            if (sendto(sock_ipv4, &packet_v4, sizeof(packet_v4), 0, (struct sockaddr *) (server_address->ai_addr),
+                       server_address->ai_addrlen) == -1) {
+                exit_error("Error: Couldn't send packet!\n");
+            }
+            memset(&packet_v4.data, 0, max_data_len);
+        }
+        // IPv6
+        else
+        {
+            PACKETS_SENT ++;
+            if (file_size == 0){
+                packet_v6.header.icmp6_code = END_TRANSMISSION;
+            }
+            // Contains the size of the current message
+            packet_v6.header.icmp6_dataun.icmp6_un_data32[0] = n_of_bytes;
+            memcpy(packet_v6.data, buff, n_of_bytes);
+            if (sendto(sock_ipv6, &packet_v6, sizeof(packet_v6), 0, (struct sockaddr *) (server_address->ai_addr),
+                       server_address->ai_addrlen) == -1) {
+                exit_error("Error: Couldn't send packet!\n");
+            }
+            printf("Packet #%d \n", PACKETS_SENT);
+            usleep(5000);
+            memset(&packet_v6.data, 0, max_data_len);
+        }
+
     }
+    printf("%d\n", PACKETS_SENT);
     return 0;
 }
 
