@@ -14,6 +14,7 @@
 #include <libgen.h>
 #include <unistd.h>
 #include <fstream>
+#include <vector>
 
 #define EXIT_SUCCESS 0
 #define EXIT_ERROR 1
@@ -25,7 +26,7 @@
 #define MAX_PAYLOAD_LEN_IPV4 (MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr))
 #define MAX_PAYLOAD_LEN_IPV6 (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr))
 
-char * RECEIVE_BUFFER = NULL;
+std::vector<char> RECEIVE_BUFFER ;
 char * FILE_NAME = NULL;
 int FILE_SIZE = 0;
 int PACKETS_RECEIVED = 0;
@@ -81,9 +82,10 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
             if (packet->header.code == START_TRANSMISSION)
             {
                 // packet->header.un.echo.id of the first packet contains the size of the file
-                RECEIVE_BUFFER = (char*) (calloc(1, packet->header.un.echo.id));
+                //RECEIVE_BUFFER = (char*) (calloc(1, packet->header.un.echo.id));
+                RECEIVE_BUFFER.reserve(packet->header.un.echo.id);
                 FILE_NAME = (char*) (calloc(1, strlen(packet->data)));
-                if (RECEIVE_BUFFER == NULL || FILE_NAME == NULL)
+                if (FILE_NAME == NULL)
                 {
                     exit_error("Error: Couldn't allocate server buffers!\n");
                 }
@@ -96,20 +98,20 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                 {
                     exit_error("Error: Couldn't create output file!\n");
                 }
-                if (fputs(RECEIVE_BUFFER, output) != 0)
-                {
-                    exit_error("Error: Couldn't write to file!\n");
-                }
-                fclose(output);
-                free(RECEIVE_BUFFER);
-                RECEIVE_BUFFER = NULL;
-                free(FILE_NAME);
-                FILE_NAME = NULL;
+//                if (fputs(RECEIVE_BUFFER, output) != 0)
+//                {
+//                    exit_error("Error: Couldn't write to file!\n");
+//                }
+//                fclose(output);
+//                free(RECEIVE_BUFFER);
+//                RECEIVE_BUFFER = NULL;
+//                free(FILE_NAME);
+//                FILE_NAME = NULL;
             }
-            else
-            {
-                strcat(RECEIVE_BUFFER, packet->data);
-            }
+//            else
+//            {
+//                strcat(RECEIVE_BUFFER, packet->data);
+//            }
 
         }
     }
@@ -125,16 +127,20 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                 //printf("Packet contents: \nFile size = %d\nFile name = %s\n", packet->header.icmp6_dataun.icmp6_un_data32[0], packet->data);
                 if (packet->header.icmp6_code == START_TRANSMISSION) {
                     // packet->header.icmp6_dataun.icmp6_un_data32[0] of the first packet contains the size of the file
-                    RECEIVE_BUFFER = (char *) (calloc(1, packet->header.icmp6_dataun.icmp6_un_data32[0]));
+                    RECEIVE_BUFFER.reserve(packet->header.icmp6_dataun.icmp6_un_data32[0]);
                     FILE_SIZE = packet->header.icmp6_dataun.icmp6_un_data32[0];
                     FILE_NAME = (char *) (calloc(1, strlen(packet->data)));
-                    if (RECEIVE_BUFFER == NULL || FILE_NAME == NULL) {
+                    if (FILE_NAME == NULL) {
                         exit_error("Error: Couldn't allocate server buffers!\n");
                     }
                     memcpy(FILE_NAME, basename(packet->data), strlen(basename(packet->data)));
                 } else if (packet->header.icmp6_code == END_TRANSMISSION) {
 
-                    strncat(RECEIVE_BUFFER, packet->data, packet->header.icmp6_dataun.icmp6_un_data32[0]);
+                    //strncat(RECEIVE_BUFFER, packet->data, packet->header.icmp6_dataun.icmp6_un_data32[0]);
+                    for (uint32_t i = 0; i < packet->header.icmp6_dataun.icmp6_un_data32[0]; i++)
+                    {
+                        RECEIVE_BUFFER.push_back(packet->data[i]);
+                    }
 
                     std::ofstream output;
                     output.open(FILE_NAME, std::ios::binary | std::ios::out);
@@ -142,7 +148,10 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                     {
                         exit_error("Error: Couldn't create output file!\n");
                     }
-                    output.write(RECEIVE_BUFFER, FILE_SIZE - strlen(FILE_NAME));
+                    for (auto &e : RECEIVE_BUFFER)
+                    {
+                        output << e;
+                    }
 //
 //                    FILE *output = fopen(FILE_NAME, "w+");
 //                    if (output == NULL) {
@@ -152,14 +161,19 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
 //                        exit_error("Error: Couldn't write to file! \n");
 //                    }
 //                    fclose(output);
-                    free(RECEIVE_BUFFER);
-                    RECEIVE_BUFFER = NULL;
+                    //free(RECEIVE_BUFFER);
+                    //RECEIVE_BUFFER = NULL;
+                    RECEIVE_BUFFER.clear();
                     free(FILE_NAME);
                     FILE_NAME = NULL;
-                    //printf("RECEVIED%d\n", PACKETS_RECEIVED);
+                    printf("RECEVIED%d\n", PACKETS_RECEIVED);
+                    PACKETS_RECEIVED = 0;
                 } else {
                     printf("Packet #%d \n", PACKETS_RECEIVED);
-                    strncat(RECEIVE_BUFFER, packet->data, packet->header.icmp6_dataun.icmp6_un_data32[0]);
+                    for (uint32_t i = 0; i < packet->header.icmp6_dataun.icmp6_un_data32[0]; i++)
+                    {
+                        RECEIVE_BUFFER.push_back(packet->data[i]);
+                    }
 
                 }
             }
@@ -359,8 +373,8 @@ int client(const char *file, const char *host) {
                        server_address->ai_addrlen) == -1) {
                 exit_error("Error: Couldn't send packet!\n");
             }
-            printf("Packet #%d \n", PACKETS_SENT);
-            usleep(5000);
+            //printf("Packet #%d \n", PACKETS_SENT);
+            usleep(1000);
             memset(&packet_v6.data, 0, max_data_len);
         }
 
