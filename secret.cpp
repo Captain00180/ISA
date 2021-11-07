@@ -16,6 +16,10 @@
 #include <fstream>
 #include <vector>
 
+/*****************************************************
+ *      Macros, global variables and structures      *
+ ****************************************************/
+
 #define EXIT_SUCCESS 0
 #define EXIT_ERROR 1
 
@@ -25,6 +29,7 @@
 #define MAX_PACKET_SIZE 1500
 #define MAX_PAYLOAD_LEN_IPV4 (MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr))
 #define MAX_PAYLOAD_LEN_IPV6 (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr))
+
 
 std::vector<char> RECEIVE_BUFFER;
 char *FILE_NAME = NULL;
@@ -36,30 +41,87 @@ typedef struct icmpv4_packet {
     struct icmphdr header;
     char data[MAX_PAYLOAD_LEN_IPV4];
 } icmpv4_packet;
-
 typedef struct icmpv6_packet {
     struct icmp6_hdr header;
     char data[MAX_PAYLOAD_LEN_IPV6];
 } icmpv6_packet;
 
+/*****************************************************
+ *            General function definitions           *
+ ****************************************************/
 
-void initialize_icmpv4_packet(icmpv4_packet *pack) {
-    pack->header.checksum = 0;
-    pack->header.type = ICMP_ECHO;
-    pack->header.code = 0;
-}
-
-void initialize_icmpv6_packet(icmpv6_packet *pack) {
-    pack->header.icmp6_cksum = 0;
-    pack->header.icmp6_type = ICMP6_ECHO_REQUEST;
-    pack->header.icmp6_code = 0;
-}
-
+/**
+ * Terminates the program with an exit code
+ * @param msg Message to be printed to stderr
+ */
 void exit_error(const char *msg) {
     fprintf(stderr, "%s", msg);
     exit(EXIT_ERROR);
 }
 
+/**
+ * Parses program arguments from the command line
+ * @param argc
+ * @param argv
+ * @param LISTEN_MODE Is set to 0 if application should be ran as a client, and to 1 if it should be ran as a server
+ * @param file Is set to the name of the input file
+ * @param host Is set to the hostname/ip address of the server
+ */
+void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char **host) {
+    int r_flag = 0;
+    int s_flag = 0;
+    int l_flag = 0;
+    int c;
+    opterr = 0;
+
+    while ((c = getopt(argc, argv, "r:s:l")) != -1) {
+        switch (c) {
+            case 'r':
+                r_flag = 1;
+                *file = optarg;
+                break;
+            case 's':
+                s_flag = 1;
+                *host = optarg;
+                break;
+            case 'l':
+                l_flag = 1;
+                break;
+            default:
+                exit_error("Error; Unexpected argument!\n");
+        }
+    }
+    //'-r' and '-s' options are required
+    if (!l_flag && (!r_flag || !s_flag)) {
+        exit_error("Error: Missing arguments!\n");
+    }
+
+    *LISTEN_MODE = l_flag;
+}
+
+/**
+ * Returns the size of the file, indicated by the FILE pointer
+ * @param input_file FILE pointer to the file
+ * @return Size of the file, in bytes
+ */
+size_t get_file_size(FILE *input_file) {
+    struct stat file_stats{};
+    if (fstat(fileno(input_file), &file_stats) != 0) {
+        exit_error("Error: Couldn't get file information!\n");
+    }
+    return file_stats.st_size;
+}
+
+/*****************************************************
+ *            Server function definitions            *
+ ****************************************************/
+
+/**
+ * Analyzes a received packet
+ * @param user
+ * @param header
+ * @param data
+ */
 void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char *data) {
 
     // Points to the beginning of the IP header.
@@ -170,6 +232,9 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
 
 }
 
+/**
+ * Represents the behavior of a server. Contains the main loop of the server
+ */
 void server() {
     pcap_t *device = NULL;
     char errbuf[PCAP_ERRBUF_SIZE];
@@ -191,39 +256,42 @@ void server() {
     pcap_loop(device, -1, handle_packet, NULL);
 }
 
-
-void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char **host) {
-    int r_flag = 0;
-    int s_flag = 0;
-    int l_flag = 0;
-    int c;
-    opterr = 0;
-
-    while ((c = getopt(argc, argv, "r:s:l")) != -1) {
-        switch (c) {
-            case 'r':
-                r_flag = 1;
-                *file = optarg;
-                break;
-            case 's':
-                s_flag = 1;
-                *host = optarg;
-                break;
-            case 'l':
-                l_flag = 1;
-                break;
-            default:
-                exit_error("Error; Unexpected argument!\n");
-        }
-    }
-    //'-r' and '-s' options are required
-    if (!l_flag && (!r_flag || !s_flag)) {
-        exit_error("Error: Missing arguments!\n");
-    }
-
-    *LISTEN_MODE = l_flag;
+/*****************************************************
+ *            Client function definitions            *
+ ****************************************************/
+/**
+ * Prepares an icmpv4 packet
+ * @param pack Empty icmpv4 packet
+ */
+void initialize_icmpv4_packet(icmpv4_packet *pack) {
+    pack->header.checksum = 0;
+    pack->header.type = ICMP_ECHO;
+    pack->header.code = 0;
 }
 
+/**
+ * Prepares an icmpv6 packet
+ * @param pack Empty icmpv6 packet
+ */
+void initialize_icmpv6_packet(icmpv6_packet *pack) {
+    pack->header.icmp6_cksum = 0;
+    pack->header.icmp6_type = ICMP6_ECHO_REQUEST;
+    pack->header.icmp6_code = 0;
+}
+
+/**
+ * Sends the first packet of the ICMP communication. This packet contains the size and name of the file
+ * The function attempts to connect to all server addresses in 'server_address' and chooses to
+ * initiate transmission on first successful connection.
+ * @param file The name of the input file
+ * @param server_address Pointer to a linked list containing all possible server addresses
+ * @param sock_ipv4 Ipv4 socket
+ * @param sock_ipv6 Ipv6 socket
+ * @param packet_v4 Ipv4 packet
+ * @param packet_v6 Ipv6 packet
+ * @param file_size Size of the file to be sent
+ * @return Address of the server, to which a connection attempt succeeded
+ */
 struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_address, int sock_ipv4, int sock_ipv6,
                                   icmpv4_packet packet_v4,
                                   icmpv6_packet packet_v6, size_t file_size) {
@@ -235,8 +303,8 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
             // IPv4 address
             // Packet data contains only file name
             memcpy(packet_v4.data, file, strlen(file));
-            // Using the 'echo.id' field of the header to communicate the file size to server
-            packet_v4.header.un.echo.id = file_size + strlen(file);
+            // Using the 'gateway' field of the header to communicate the file size to server
+            packet_v4.header.un.gateway = file_size + strlen(file);
             // Using the 'code' field of the header to indicate start/end of file transmission
             packet_v4.header.code = START_TRANSMISSION;
             // Send the message
@@ -269,6 +337,57 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
     return server_address;
 }
 
+/**
+ * Prepares the Ipv6 packet for data transmission.
+ * @param packet_v6 Ipv6 packet
+ * @param file_size Size of the file to be sent
+ * @param n_of_bytes Number of bytes of data from the input file, which this packet will hold
+ * @param buff Buffer containing n_of_bytes bytes of data from the input file
+ * @return Prepared Ipv6 packet
+ */
+icmpv6_packet prepare_packet_v6(icmpv6_packet packet_v6, size_t file_size, size_t n_of_bytes,
+                                const unsigned char *buff) {
+    // Contains the size of the current message
+    packet_v6.header.icmp6_dataun.icmp6_un_data32[0] = n_of_bytes;
+    PACKETS_SENT++;
+
+    if (file_size == 0) {
+        packet_v6.header.icmp6_code = END_TRANSMISSION;
+    }
+
+    memcpy(packet_v6.data, buff, n_of_bytes);
+    return packet_v6;
+}
+
+/**
+ * Prepares the Ipv4 packet for data transmission.
+ * @param packet_v4 Ipv4 packet
+ * @param file_size Size of the file to be sent
+ * @param n_of_bytes Number of bytes of data from the input file, which this packet will hold
+ * @param buff Buffer containing n_of_bytes bytes of data from the input file
+ * @return Prepared Ipv4 packet
+ */
+icmpv4_packet prepare_packet_v4(icmpv4_packet packet_v4, size_t file_size, size_t n_of_bytes, const unsigned char *buff) {
+
+    // Contains the size of the current message
+    packet_v4.header.un.gateway = n_of_bytes;
+    PACKETS_SENT++;
+
+    // This packet is last to be sent - set the code accordingly, so the server knows communication is over
+    if (file_size == 0) {
+        packet_v4.header.code = END_TRANSMISSION;
+    }
+
+    memcpy(packet_v4.data, buff, n_of_bytes);
+    return packet_v4;
+}
+
+/**
+ * Represents the behaior of a client
+ * @param file Name of the input file
+ * @param host Hostname/IP address of the server
+ * @return Success
+ */
 int client(const char *file, const char *host) {
     struct addrinfo hints;
     memset(&hints, 0, sizeof(struct addrinfo));
@@ -305,17 +424,8 @@ int client(const char *file, const char *host) {
         exit_error("Error: Couldn't open file!\n");
     }
 
-    // Get the size of the file. Sum it up with the file name for payload length
-
-    struct stat file_stats{};
-    if (fstat(fileno(input_file), &file_stats) != 0) {
-        exit_error("Error: Couldn't get file information!\n");
-    }
-    size_t file_size = file_stats.st_size;
-
-    //unsigned char buff[100];
-//fread(buff, 99, 1, input_file);
-//printf("%s\n", buff);
+    // Get the size of the file.
+    size_t file_size = get_file_size(input_file);
 
     // Send the first packet, containing file name and file size
     server_address = send_meta_packet(file, server_address, sock_ipv4, sock_ipv6, packet_v4, packet_v6, file_size);
@@ -323,45 +433,49 @@ int client(const char *file, const char *host) {
     if (server_address == NULL) {
         exit_error("Error: Couldn't reach the server!\n");
     }
-    // Buffer which holds data from the file
+
+    // Number of bytes, which will be sent in the corresponding packet
     size_t n_of_bytes = 0;
     size_t max_data_len = MAX_PAYLOAD_LEN_IPV6;
     while (file_size > 0) {
         unsigned char buff[MAX_PACKET_SIZE] = {0};
         //printf("________________________NEW PACKET__________________\n");
+        // Buffer which holds data from the file
         n_of_bytes = (file_size > max_data_len) ? max_data_len : file_size;
         file_size -= n_of_bytes;
+
+        // Read the required amount of bytes from input file
         if (fread(buff, 1, n_of_bytes, input_file) != n_of_bytes) {
             exit_error("Error reading file!\n");
         }
+
         // IPv4
         if (server_address->ai_family == AF_INET) {
-            if (file_size == 0) {
-                packet_v4.header.code = END_TRANSMISSION;
-            }
-            memcpy(packet_v4.data, buff, n_of_bytes);
+            packet_v4 = prepare_packet_v4(packet_v4, file_size, n_of_bytes, buff);
+
             if (sendto(sock_ipv4, &packet_v4, sizeof(packet_v4), 0, (struct sockaddr *) (server_address->ai_addr),
                        server_address->ai_addrlen) == -1) {
                 exit_error("Error: Couldn't send packet!\n");
             }
+
+            usleep(1000);
             memset(&packet_v4.data, 0, max_data_len);
         }
             // IPv6
-        else {
-            PACKETS_SENT++;
-            if (file_size == 0) {
-                packet_v6.header.icmp6_code = END_TRANSMISSION;
-            }
-            // Contains the size of the current message
-            packet_v6.header.icmp6_dataun.icmp6_un_data32[0] = n_of_bytes;
-            memcpy(packet_v6.data, buff, n_of_bytes);
+        else if (server_address->ai_family == AF_INET6) {
+            packet_v6 = prepare_packet_v6(packet_v6, file_size, n_of_bytes, buff);
             if (sendto(sock_ipv6, &packet_v6, sizeof(packet_v6), 0, (struct sockaddr *) (server_address->ai_addr),
                        server_address->ai_addrlen) == -1) {
                 exit_error("Error: Couldn't send packet!\n");
             }
+
             //printf("Packet #%d \n", PACKETS_SENT);
             usleep(1000);
             memset(&packet_v6.data, 0, max_data_len);
+        }
+        // Neither IPv4 nor IPv6
+        else {
+            exit_error("Error: Invalid IP version of desired server!\n");
         }
 
     }
@@ -369,6 +483,9 @@ int client(const char *file, const char *host) {
     return 0;
 }
 
+/**************************************
+ *              MAIN                  *
+ **************************************/
 int main(int argc, char *argv[]) {
     // Determines whether the program is being executed as a client or server
     int LISTEN_MODE = 0;
