@@ -15,6 +15,8 @@
 #include <unistd.h>
 #include <fstream>
 #include <vector>
+#include <map>
+#include <iostream>
 
 /*****************************************************
  *      Macros, global variables and structures      *
@@ -31,7 +33,8 @@
 #define MAX_PAYLOAD_LEN_IPV6 (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr))
 
 
-std::vector<char> RECEIVE_BUFFER;
+//std::vector<char> RECEIVE_BUFFER;
+std::map<int, std::vector<char>> RECEIVE_BUFFER;
 char *FILE_NAME = NULL;
 int FILE_SIZE = 0;
 int PACKETS_RECEIVED = 0;
@@ -143,7 +146,7 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
             if (packet->header.code == START_TRANSMISSION) {
                 // packet->header.un.echo.id of the first packet contains the size of the file
                 //RECEIVE_BUFFER = (char*) (calloc(1, packet->header.un.echo.id));
-                RECEIVE_BUFFER.reserve(packet->header.un.echo.id);
+                //RECEIVE_BUFFER.reserve(packet->header.un.echo.id);
                 FILE_NAME = (char *) (calloc(1, strlen(packet->data)));
                 if (FILE_NAME == NULL) {
                     exit_error("Error: Couldn't allocate server buffers!\n");
@@ -180,8 +183,9 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                 //printf("Packet contents: \nFile size = %d\nFile name = %s\n", packet->header.icmp6_dataun.icmp6_un_data32[0], packet->data);
                 if (packet->header.icmp6_code == START_TRANSMISSION) {
                     // packet->header.icmp6_dataun.icmp6_un_data32[0] of the first packet contains the size of the file
-                    RECEIVE_BUFFER.reserve(packet->header.icmp6_dataun.icmp6_un_data32[0]);
-                    FILE_SIZE = packet->header.icmp6_dataun.icmp6_un_data32[0];
+                    //RECEIVE_BUFFER.reserve(packet->header.icmp6_dataun.icmp6_un_data32[0]);
+                    //FILE_SIZE = packet->header.icmp6_dataun.icmp6_un_data32[0];
+
                     FILE_NAME = (char *) (calloc(1, strlen(packet->data)));
                     if (FILE_NAME == NULL) {
                         exit_error("Error: Couldn't allocate server buffers!\n");
@@ -189,18 +193,28 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                     memcpy(FILE_NAME, basename(packet->data), strlen(basename(packet->data)));
                 } else if (packet->header.icmp6_code == END_TRANSMISSION) {
 
-                    //strncat(RECEIVE_BUFFER, packet->data, packet->header.icmp6_dataun.icmp6_un_data32[0]);
-                    for (uint32_t i = 0; i < packet->header.icmp6_dataun.icmp6_un_data32[0]; i++) {
-                        RECEIVE_BUFFER.push_back(packet->data[i]);
+                    std::vector<char> buff;
+                    uint32_t data_size = packet->header.icmp6_dataun.icmp6_un_data16[0];
+                    uint16_t id = packet->header.icmp6_dataun.icmp6_un_data16[1];
+                    buff.reserve(data_size);
+
+                    for (uint32_t i = 0; i <data_size; i++) {
+                        buff.push_back(packet->data[i]);
                     }
+                    RECEIVE_BUFFER.insert({ id, buff });
 
                     std::ofstream output;
                     output.open(FILE_NAME, std::ios::binary | std::ios::out);
                     if (!output.is_open()) {
                         exit_error("Error: Couldn't create output file!\n");
                     }
-                    for (auto &e : RECEIVE_BUFFER) {
-                        output << e;
+
+                    for (auto & i : RECEIVE_BUFFER)
+                    {
+                        for (auto & j : i.second)
+                        {
+                            output << j;
+                        }
                     }
 //
 //                    FILE *output = fopen(FILE_NAME, "w+");
@@ -220,9 +234,16 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                     PACKETS_RECEIVED = 0;
                 } else {
                     printf("Packet #%d \n", PACKETS_RECEIVED);
-                    for (uint32_t i = 0; i < packet->header.icmp6_dataun.icmp6_un_data32[0]; i++) {
-                        RECEIVE_BUFFER.push_back(packet->data[i]);
+                    std::vector<char> buff;
+                    uint32_t data_size = packet->header.icmp6_dataun.icmp6_un_data16[0];
+                    uint16_t id = packet->header.icmp6_dataun.icmp6_un_data16[1];
+                    buff.reserve(data_size);
+
+                    for (uint32_t i = 0; i <data_size; i++) {
+                        buff.push_back(packet->data[i]);
                     }
+
+                    RECEIVE_BUFFER.insert({ id, buff });
 
                 }
             }
@@ -280,6 +301,56 @@ void initialize_icmpv6_packet(icmpv6_packet *pack) {
 }
 
 /**
+ * Prepares the Ipv4 packet for data transmission.
+ * @param packet_v4 Ipv4 packet
+ * @param file_size Size of the file to be sent
+ * @param n_of_bytes Number of bytes of data from the input file, which this packet will hold
+ * @param buff Buffer containing n_of_bytes bytes of data from the input file
+ * @return Prepared Ipv4 packet
+ */
+icmpv4_packet prepare_packet_v4(icmpv4_packet packet_v4, size_t file_size, size_t n_of_bytes, const unsigned char *buff) {
+
+    // Contains the size of the current message
+    packet_v4.header.un.echo.sequence = n_of_bytes;
+    // Contains the ID of the packet
+    packet_v4.header.un.echo.id = PACKETS_SENT;
+
+    // This packet is last to be sent - set the code accordingly, so the server knows communication is over
+    if (file_size == 0) {
+        packet_v4.header.code = END_TRANSMISSION;
+    }
+
+    memcpy(packet_v4.data, buff, n_of_bytes);
+    PACKETS_SENT++;
+    return packet_v4;
+}
+
+/**
+ * Prepares the Ipv6 packet for data transmission.
+ * @param packet_v6 Ipv6 packet
+ * @param file_size Size of the file to be sent
+ * @param n_of_bytes Number of bytes of data from the input file, which this packet will hold
+ * @param buff Buffer containing n_of_bytes bytes of data from the input file
+ * @return Prepared Ipv6 packet
+ */
+icmpv6_packet prepare_packet_v6(icmpv6_packet packet_v6, size_t file_size, size_t n_of_bytes,
+                                const char *buff) {
+    // Contains the size of the current message
+    packet_v6.header.icmp6_dataun.icmp6_un_data16[0] = n_of_bytes;
+    // Contains the ID of the packet
+    packet_v6.header.icmp6_dataun.icmp6_un_data16[1] = PACKETS_SENT;
+
+
+    if (file_size == 0) {
+        packet_v6.header.icmp6_code = END_TRANSMISSION;
+    }
+
+    memcpy(packet_v6.data, buff, n_of_bytes);
+    PACKETS_SENT++;
+    return packet_v6;
+}
+
+/**
  * Sends the first packet of the ICMP communication. This packet contains the size and name of the file
  * The function attempts to connect to all server addresses in 'server_address' and chooses to
  * initiate transmission on first successful connection.
@@ -313,10 +384,11 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
             memset(packet_v4.data, 0, MAX_PAYLOAD_LEN_IPV4);
         } else {
             // IPv6 address
-            // Packet data contains only file name
-            memcpy(packet_v6.data, file, strlen(file));
+            // First packet contains the file name and size of the whole file
+            packet_v6 = prepare_packet_v6(packet_v6, file_size, strlen(file), file);
+
             // Using the 'data32' field of the header to communicate the file size to server
-            packet_v6.header.icmp6_dataun.icmp6_un_data32[0] = file_size + strlen(file);
+            packet_v6.header.icmp6_dataun.icmp6_un_data32[0] = file_size;
             // Using the 'code' field of the header to indicate start/end of file transmission
             packet_v6.header.icmp6_code = START_TRANSMISSION;
             // Send the message
@@ -335,51 +407,6 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
         }
     }
     return server_address;
-}
-
-/**
- * Prepares the Ipv6 packet for data transmission.
- * @param packet_v6 Ipv6 packet
- * @param file_size Size of the file to be sent
- * @param n_of_bytes Number of bytes of data from the input file, which this packet will hold
- * @param buff Buffer containing n_of_bytes bytes of data from the input file
- * @return Prepared Ipv6 packet
- */
-icmpv6_packet prepare_packet_v6(icmpv6_packet packet_v6, size_t file_size, size_t n_of_bytes,
-                                const unsigned char *buff) {
-    // Contains the size of the current message
-    packet_v6.header.icmp6_dataun.icmp6_un_data32[0] = n_of_bytes;
-    PACKETS_SENT++;
-
-    if (file_size == 0) {
-        packet_v6.header.icmp6_code = END_TRANSMISSION;
-    }
-
-    memcpy(packet_v6.data, buff, n_of_bytes);
-    return packet_v6;
-}
-
-/**
- * Prepares the Ipv4 packet for data transmission.
- * @param packet_v4 Ipv4 packet
- * @param file_size Size of the file to be sent
- * @param n_of_bytes Number of bytes of data from the input file, which this packet will hold
- * @param buff Buffer containing n_of_bytes bytes of data from the input file
- * @return Prepared Ipv4 packet
- */
-icmpv4_packet prepare_packet_v4(icmpv4_packet packet_v4, size_t file_size, size_t n_of_bytes, const unsigned char *buff) {
-
-    // Contains the size of the current message
-    packet_v4.header.un.gateway = n_of_bytes;
-    PACKETS_SENT++;
-
-    // This packet is last to be sent - set the code accordingly, so the server knows communication is over
-    if (file_size == 0) {
-        packet_v4.header.code = END_TRANSMISSION;
-    }
-
-    memcpy(packet_v4.data, buff, n_of_bytes);
-    return packet_v4;
 }
 
 /**
@@ -463,7 +490,7 @@ int client(const char *file, const char *host) {
         }
             // IPv6
         else if (server_address->ai_family == AF_INET6) {
-            packet_v6 = prepare_packet_v6(packet_v6, file_size, n_of_bytes, buff);
+            packet_v6 = prepare_packet_v6(packet_v6, file_size, n_of_bytes, reinterpret_cast<const char *>(buff));
             if (sendto(sock_ipv6, &packet_v6, sizeof(packet_v6), 0, (struct sockaddr *) (server_address->ai_addr),
                        server_address->ai_addrlen) == -1) {
                 exit_error("Error: Couldn't send packet!\n");
