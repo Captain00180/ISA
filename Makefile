@@ -1,6 +1,6 @@
 CXX = g++
 CPFLAGS = -Wall -Wextra -pedantic -g
-CPLIBS = -lssl -lcrypto -lpcap
+CPLIBS = -lssl -lcrypto -lpcap -pthread
 
 all: secret
 

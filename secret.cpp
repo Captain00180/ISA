@@ -17,6 +17,8 @@
 #include <vector>
 #include <map>
 #include <iostream>
+#include <thread>
+#include <mutex>
 
 /*****************************************************
  *      Macros, global variables and structures      *
@@ -30,11 +32,12 @@
 
 #define MAX_PACKET_SIZE 1500
 #define MAX_PAYLOAD_LEN_IPV4 (MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr))
-#define MAX_PAYLOAD_LEN_IPV6 (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr))
+#define MAX_PAYLOAD_LEN_IPV6 (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr) - 48)
 
 
 //std::vector<char> RECEIVE_BUFFER;
 std::map<int, std::vector<char>> RECEIVE_BUFFER;
+std::mutex rec_buff_mutex;
 char *FILE_NAME = NULL;
 int FILE_SIZE = 0;
 int PACKETS_RECEIVED = 0;
@@ -46,6 +49,8 @@ typedef struct icmpv4_packet {
 } icmpv4_packet;
 typedef struct icmpv6_packet {
     struct icmp6_hdr header;
+    uint32_t id;
+    uint16_t payload_len;
     char data[MAX_PAYLOAD_LEN_IPV6];
 } icmpv6_packet;
 
@@ -183,8 +188,6 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                 //printf("Packet contents: \nFile size = %d\nFile name = %s\n", packet->header.icmp6_dataun.icmp6_un_data32[0], packet->data);
                 if (packet->header.icmp6_code == START_TRANSMISSION) {
                     // packet->header.icmp6_dataun.icmp6_un_data32[0] of the first packet contains the size of the file
-                    //RECEIVE_BUFFER.reserve(packet->header.icmp6_dataun.icmp6_un_data32[0]);
-                    //FILE_SIZE = packet->header.icmp6_dataun.icmp6_un_data32[0];
 
                     FILE_NAME = (char *) (calloc(1, strlen(packet->data)));
                     if (FILE_NAME == NULL) {
@@ -194,13 +197,15 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                 } else if (packet->header.icmp6_code == END_TRANSMISSION) {
 
                     std::vector<char> buff;
-                    uint32_t data_size = packet->header.icmp6_dataun.icmp6_un_data16[0];
-                    uint16_t id = packet->header.icmp6_dataun.icmp6_un_data16[1];
+                    uint16_t data_size = packet->payload_len;
+                    uint32_t id = packet->id;
                     buff.reserve(data_size);
 
                     for (uint32_t i = 0; i <data_size; i++) {
                         buff.push_back(packet->data[i]);
                     }
+
+                    rec_buff_mutex.lock();
                     RECEIVE_BUFFER.insert({ id, buff });
 
                     std::ofstream output;
@@ -216,34 +221,26 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                             output << j;
                         }
                     }
-//
-//                    FILE *output = fopen(FILE_NAME, "w+");
-//                    if (output == NULL) {
-//                        exit_error("Error: Couldn't create output file!\n");
-//                    }
-//                    if (fputs(RECEIVE_BUFFER, output) < 0) {
-//                        exit_error("Error: Couldn't write to file! \n");
-//                    }
-//                    fclose(output);
-                    //free(RECEIVE_BUFFER);
-                    //RECEIVE_BUFFER = NULL;
+
                     RECEIVE_BUFFER.clear();
                     free(FILE_NAME);
                     FILE_NAME = NULL;
+                    rec_buff_mutex.unlock();
                     printf("RECEVIED%d\n", PACKETS_RECEIVED);
                     PACKETS_RECEIVED = 0;
                 } else {
                     printf("Packet #%d \n", PACKETS_RECEIVED);
                     std::vector<char> buff;
-                    uint32_t data_size = packet->header.icmp6_dataun.icmp6_un_data16[0];
-                    uint16_t id = packet->header.icmp6_dataun.icmp6_un_data16[1];
+                    uint16_t data_size = packet->payload_len;
+                    uint32_t id = packet->id;
                     buff.reserve(data_size);
 
                     for (uint32_t i = 0; i <data_size; i++) {
                         buff.push_back(packet->data[i]);
                     }
-
+                    rec_buff_mutex.lock();
                     RECEIVE_BUFFER.insert({ id, buff });
+                    rec_buff_mutex.unlock();
 
                 }
             }
@@ -251,6 +248,11 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
     }
 
 
+}
+
+void _start_thread(u_char *user, const struct pcap_pkthdr *header, const u_char *data)
+{
+    std::thread thread(handle_packet, user, header, data);
 }
 
 /**
@@ -336,9 +338,9 @@ icmpv4_packet prepare_packet_v4(icmpv4_packet packet_v4, size_t file_size, size_
 icmpv6_packet prepare_packet_v6(icmpv6_packet packet_v6, size_t file_size, size_t n_of_bytes,
                                 const char *buff) {
     // Contains the size of the current message
-    packet_v6.header.icmp6_dataun.icmp6_un_data16[0] = n_of_bytes;
+    packet_v6.payload_len = n_of_bytes;
     // Contains the ID of the packet
-    packet_v6.header.icmp6_dataun.icmp6_un_data16[1] = PACKETS_SENT;
+    packet_v6.id = PACKETS_SENT;
 
 
     if (file_size == 0) {
@@ -485,7 +487,7 @@ int client(const char *file, const char *host) {
                 exit_error("Error: Couldn't send packet!\n");
             }
 
-            usleep(1000);
+            //usleep(1000);
             memset(&packet_v4.data, 0, max_data_len);
         }
             // IPv6
