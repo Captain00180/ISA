@@ -20,6 +20,7 @@
 #include <thread>
 #include <mutex>
 #include <sstream>
+#include <string>
 
 /*****************************************************
  *      Macros, global variables and structures      *
@@ -32,16 +33,18 @@
 #define END_TRANSMISSION 42
 
 #define MAX_PACKET_SIZE 1500
-#define MAX_PAYLOAD_LEN_IPV4 (MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr))
-#define MAX_PAYLOAD_LEN_IPV6 (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr) - 48)
+#define MAX_PAYLOAD_LEN_IPV4 ( ( (MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr)) / 16) * 16 )
+#define MAX_PAYLOAD_LEN_IPV6 ( ( (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr) - 48) / 16) * 16)
 
-
+char *FOO = NULL;
 
 std::map<int, std::vector<char>> RECEIVE_BUFFER;
 char *FILE_NAME = NULL;
 int FILE_SIZE = 0;
 int PACKETS_RECEIVED = 0;
 int PACKETS_SENT = 0;
+
+const unsigned char USER_KEY[] = "xjanus11";
 
 typedef struct icmpv4_packet {
     struct icmphdr header;
@@ -205,7 +208,8 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                 } else if (packet->header.icmp6_code == END_TRANSMISSION) {
 
                     std::vector<char> buff;
-                    uint16_t data_size = packet->payload_len;
+                    uint16_t data_size = ( (packet->payload_len) / 16) * 16 + 16;
+                    int difference = data_size - packet->payload_len;
                     uint32_t id = packet->id;
                     buff.reserve(data_size);
 
@@ -215,19 +219,44 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
 
                     RECEIVE_BUFFER.insert({ id, buff });
 
+
                     std::ofstream output;
                     output.open(FILE_NAME, std::ios::binary | std::ios::out);
                     if (!output.is_open()) {
                         exit_error("Error: Couldn't create output file!\n");
                     }
 
-                    for (auto & i : RECEIVE_BUFFER)
+                    AES_KEY dec_key;
+                    AES_set_decrypt_key(USER_KEY, 128, &dec_key);
+                    for (auto & data_block : RECEIVE_BUFFER)
                     {
-                        std::cout << "Writing packet #" << i.first << std::endl;
-                        for (auto & j : i.second)
+                        //td::cout << "Writing packet #" << data_block.first << std::endl;
+                        std::string data_string (data_block.second.begin(), data_block.second.end());
+                        char * data_raw = const_cast<char *>(data_string.c_str());
+                        for (int i = data_string.size() ; i > 0; i -= 16)
                         {
-                            output << j;
+                            int len = 16;
+                            char decrypted[16] = {};
+                            unsigned char temp[16] = {};
+                            if (i <= 50)
+                            {
+                                int x = 5;
+                            }
+
+                            if (id == data_block.first && i <= 16)
+                            {
+                                len = 16 - difference;
+                            }
+                            memcpy(temp, data_raw + (data_string.size() - i), 16);
+                            AES_decrypt(temp, reinterpret_cast<unsigned char *>(decrypted), &dec_key);
+                            for (int j = 0; j < len; j++)
+                            {
+                                output << decrypted[j];
+                            }
+
+
                         }
+
                     }
 
                     RECEIVE_BUFFER.clear();
@@ -303,6 +332,12 @@ void initialize_icmpv6_packet(icmpv6_packet *pack) {
     pack->header.icmp6_code = 0;
 }
 
+void encypt_data(char *buff, char *source)
+{
+
+}
+
+
 /**
  * Prepares the Ipv4 packet for data transmission.
  * @param packet_v4 Ipv4 packet
@@ -323,7 +358,23 @@ icmpv4_packet prepare_packet_v4(icmpv4_packet packet_v4, size_t file_size, size_
         packet_v4.header.code = END_TRANSMISSION;
     }
 
-    memcpy(packet_v4.data, buff, n_of_bytes);
+    AES_KEY enc_key;
+    AES_set_encrypt_key(USER_KEY, 128, &enc_key);
+    for (int i = n_of_bytes; i > 0 ; i-=16)
+    {
+        int len = 16;
+        unsigned char encrypted[16] = {};
+        char *temp[16] = {};
+
+        if (i < 16)
+        {
+            len = i;
+        }
+
+        memcpy(temp, buff + (n_of_bytes - i), len);
+        AES_encrypt(reinterpret_cast<const unsigned char *>(temp), encrypted, &enc_key);
+        memcpy((packet_v4.data) + (n_of_bytes - i), encrypted, 16);
+    }
     PACKETS_SENT++;
     return packet_v4;
 }
@@ -337,18 +388,35 @@ icmpv4_packet prepare_packet_v4(icmpv4_packet packet_v4, size_t file_size, size_
  * @return Prepared Ipv6 packet
  */
 icmpv6_packet prepare_packet_v6(icmpv6_packet packet_v6, size_t file_size, size_t n_of_bytes,
-                                const char *buff) {
+                                const char *buff, bool encrypt) {
     // Contains the size of the current message
     packet_v6.payload_len = n_of_bytes;
     // Contains the ID of the packet
     packet_v6.id = PACKETS_SENT;
 
-
     if (file_size == 0) {
         packet_v6.header.icmp6_code = END_TRANSMISSION;
     }
+    if (encrypt) {
+        AES_KEY enc_key;
+        AES_set_encrypt_key(USER_KEY, 128, &enc_key);
+        AES_KEY dec_key;
+        AES_set_decrypt_key(USER_KEY, 128, &dec_key);
+        for (int i = n_of_bytes; i > 0; i -= 16) {
+            int len = 16;
+            unsigned char encrypted[16] = {};
+            char temp[16] = {};
 
-    memcpy(packet_v6.data, buff, n_of_bytes);
+
+
+            memcpy(temp, buff + (n_of_bytes - i), 16);
+            AES_encrypt(reinterpret_cast<const unsigned char *>(temp), encrypted, &enc_key);
+            memcpy((packet_v6.data) + (n_of_bytes - i), encrypted, len);
+        }
+    } else {
+
+        memcpy(packet_v6.data, buff, n_of_bytes);
+    }
     PACKETS_SENT++;
     return packet_v6;
 }
@@ -388,7 +456,7 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
         } else {
             // IPv6 address
             // First packet contains the file name and size of the whole file
-            packet_v6 = prepare_packet_v6(packet_v6, file_size, strlen(file), file);
+            packet_v6 = prepare_packet_v6(packet_v6, file_size, strlen(file), file, false);
 
             // Using the 'data32' field of the header to communicate the file size to server
             packet_v6.header.icmp6_dataun.icmp6_un_data32[0] = file_size;
@@ -493,7 +561,7 @@ int client(const char *file, const char *host, int send_delay) {
         }
             // IPv6
         else if (server_address->ai_family == AF_INET6) {
-            packet_v6 = prepare_packet_v6(packet_v6, file_size, n_of_bytes, reinterpret_cast<const char *>(buff));
+            packet_v6 = prepare_packet_v6(packet_v6, file_size, n_of_bytes, reinterpret_cast<const char *>(buff), true);
             if (sendto(sock_ipv6, &packet_v6, sizeof(packet_v6), 0, (struct sockaddr *) (server_address->ai_addr),
                        server_address->ai_addrlen) == -1) {
                 exit_error("Error: Couldn't send packet!\n");
