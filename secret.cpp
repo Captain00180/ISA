@@ -34,14 +34,18 @@
 #define MAX_PAYLOAD_LEN_IPV4 (MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr))
 #define MAX_PAYLOAD_LEN_IPV6 (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr) - 48)
 
+#define MAX_THREAD_COUNT 50
 
-//std::vector<char> RECEIVE_BUFFER;
+
+std::vector<char*> RAW_DATA;
 std::map<int, std::vector<char>> RECEIVE_BUFFER;
 std::mutex rec_buff_mutex;
+std::vector<std::thread *> threads;
 char *FILE_NAME = NULL;
 int FILE_SIZE = 0;
 int PACKETS_RECEIVED = 0;
-int PACKETS_SENT = 1;
+int PACKETS_SENT = 0;
+int CURRENT_THREAD_COUNT = 0;
 
 typedef struct icmpv4_packet {
     struct icmphdr header;
@@ -131,6 +135,7 @@ size_t get_file_size(FILE *input_file) {
  * @param data
  */
 void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char *data) {
+    printf("THREAD#%d\n", ++CURRENT_THREAD_COUNT);
 
     // Points to the beginning of the IP header.
     // Capturing on 'any' device causes pcap to replace a 14B ethernet header with a
@@ -246,6 +251,9 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
             }
         }
     }
+    CURRENT_THREAD_COUNT--;
+    std::cout << "Ending thread!\n";
+
 
 
 }
@@ -253,6 +261,7 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
 void _start_thread(u_char *user, const struct pcap_pkthdr *header, const u_char *data)
 {
     std::thread thread(handle_packet, user, header, data);
+    thread.detach();
 }
 
 /**
@@ -276,7 +285,7 @@ void server() {
         exit_error("Error: Couldn't apply filter!\n");
     }
     printf("Started sniffing\n");
-    pcap_loop(device, -1, handle_packet, NULL);
+    pcap_loop(device, -1, _start_thread, NULL);
 }
 
 /*****************************************************
@@ -499,7 +508,7 @@ int client(const char *file, const char *host) {
             }
 
             //printf("Packet #%d \n", PACKETS_SENT);
-            usleep(1000);
+            //usleep(1000);
             memset(&packet_v6.data, 0, max_data_len);
         }
         // Neither IPv4 nor IPv6
