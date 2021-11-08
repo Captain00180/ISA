@@ -19,6 +19,7 @@
 #include <iostream>
 #include <thread>
 #include <mutex>
+#include <sstream>
 
 /*****************************************************
  *      Macros, global variables and structures      *
@@ -34,18 +35,13 @@
 #define MAX_PAYLOAD_LEN_IPV4 (MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr))
 #define MAX_PAYLOAD_LEN_IPV6 (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr) - 48)
 
-#define MAX_THREAD_COUNT 50
 
 
-std::vector<char*> RAW_DATA;
 std::map<int, std::vector<char>> RECEIVE_BUFFER;
-std::mutex rec_buff_mutex;
-std::vector<std::thread *> threads;
 char *FILE_NAME = NULL;
 int FILE_SIZE = 0;
 int PACKETS_RECEIVED = 0;
 int PACKETS_SENT = 0;
-int CURRENT_THREAD_COUNT = 0;
 
 typedef struct icmpv4_packet {
     struct icmphdr header;
@@ -79,14 +75,15 @@ void exit_error(const char *msg) {
  * @param file Is set to the name of the input file
  * @param host Is set to the hostname/ip address of the server
  */
-void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char **host) {
+void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char **host, int *delay) {
     int r_flag = 0;
     int s_flag = 0;
     int l_flag = 0;
+    int d_flag = 0;
     int c;
     opterr = 0;
 
-    while ((c = getopt(argc, argv, "r:s:l")) != -1) {
+    while ((c = getopt(argc, argv, "r:s:ld:")) != -1) {
         switch (c) {
             case 'r':
                 r_flag = 1;
@@ -99,6 +96,10 @@ void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char
             case 'l':
                 l_flag = 1;
                 break;
+            case 'd':
+                d_flag = 1;
+                *delay = std::stoi(optarg);
+                break;
             default:
                 exit_error("Error; Unexpected argument!\n");
         }
@@ -107,6 +108,9 @@ void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char
     if (!l_flag && (!r_flag || !s_flag)) {
         exit_error("Error: Missing arguments!\n");
     }
+
+    if (d_flag)
+        printf("Delay = %d\n", *delay);
 
     *LISTEN_MODE = l_flag;
 }
@@ -135,7 +139,6 @@ size_t get_file_size(FILE *input_file) {
  * @param data
  */
 void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char *data) {
-    printf("THREAD#%d\n", ++CURRENT_THREAD_COUNT);
 
     // Points to the beginning of the IP header.
     // Capturing on 'any' device causes pcap to replace a 14B ethernet header with a
@@ -210,7 +213,6 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                         buff.push_back(packet->data[i]);
                     }
 
-                    rec_buff_mutex.lock();
                     RECEIVE_BUFFER.insert({ id, buff });
 
                     std::ofstream output;
@@ -221,6 +223,7 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
 
                     for (auto & i : RECEIVE_BUFFER)
                     {
+                        std::cout << "Writing packet #" << i.first << std::endl;
                         for (auto & j : i.second)
                         {
                             output << j;
@@ -230,7 +233,6 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                     RECEIVE_BUFFER.clear();
                     free(FILE_NAME);
                     FILE_NAME = NULL;
-                    rec_buff_mutex.unlock();
                     printf("RECEVIED%d\n", PACKETS_RECEIVED);
                     PACKETS_RECEIVED = 0;
                 } else {
@@ -243,25 +245,15 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
                     for (uint32_t i = 0; i <data_size; i++) {
                         buff.push_back(packet->data[i]);
                     }
-                    rec_buff_mutex.lock();
                     RECEIVE_BUFFER.insert({ id, buff });
-                    rec_buff_mutex.unlock();
 
                 }
             }
         }
     }
-    CURRENT_THREAD_COUNT--;
-    std::cout << "Ending thread!\n";
 
 
 
-}
-
-void _start_thread(u_char *user, const struct pcap_pkthdr *header, const u_char *data)
-{
-    std::thread thread(handle_packet, user, header, data);
-    thread.detach();
 }
 
 /**
@@ -285,7 +277,7 @@ void server() {
         exit_error("Error: Couldn't apply filter!\n");
     }
     printf("Started sniffing\n");
-    pcap_loop(device, -1, _start_thread, NULL);
+    pcap_loop(device, -1, handle_packet, NULL);
 }
 
 /*****************************************************
@@ -426,7 +418,7 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
  * @param host Hostname/IP address of the server
  * @return Success
  */
-int client(const char *file, const char *host) {
+int client(const char *file, const char *host, int send_delay) {
     struct addrinfo hints;
     memset(&hints, 0, sizeof(struct addrinfo));
     // Support IPv4 and IPv6 addresses
@@ -496,7 +488,7 @@ int client(const char *file, const char *host) {
                 exit_error("Error: Couldn't send packet!\n");
             }
 
-            //usleep(1000);
+            usleep(1000 * send_delay);
             memset(&packet_v4.data, 0, max_data_len);
         }
             // IPv6
@@ -508,7 +500,7 @@ int client(const char *file, const char *host) {
             }
 
             //printf("Packet #%d \n", PACKETS_SENT);
-            //usleep(1000);
+            usleep(1000 * send_delay);
             memset(&packet_v6.data, 0, max_data_len);
         }
         // Neither IPv4 nor IPv6
@@ -529,15 +521,16 @@ int main(int argc, char *argv[]) {
     int LISTEN_MODE = 0;
     char *file = NULL;
     char *host = NULL;
+    int send_delay = 0;
 
-    parse_arguments(argc, argv, &LISTEN_MODE, &file, &host);
+    parse_arguments(argc, argv, &LISTEN_MODE, &file, &host, &send_delay);
 
     if (LISTEN_MODE) {
         server();
         return 0;
     }
 
-    client(file, host);
+    client(file, host, send_delay);
 
     // AES encryption
 //    const unsigned char message[] = "Hello, world!";
