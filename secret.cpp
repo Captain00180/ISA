@@ -6,7 +6,6 @@
 #include <arpa/inet.h>
 #include <netinet/ip_icmp.h>
 #include <netinet/icmp6.h>
-#include <netinet/if_ether.h>
 #include <netinet/ip6.h>
 #include <sys/stat.h>
 #include <openssl/aes.h>
@@ -18,8 +17,6 @@
 #include <map>
 #include <iostream>
 #include <thread>
-#include <mutex>
-#include <sstream>
 #include <string>
 
 /*****************************************************
@@ -36,11 +33,8 @@
 #define MAX_PAYLOAD_LEN_IPV4 ( ( (MAX_PACKET_SIZE - sizeof(struct icmphdr) - sizeof(struct iphdr)) / 16) * 16 )
 #define MAX_PAYLOAD_LEN_IPV6 ( ( (MAX_PACKET_SIZE - sizeof(struct icmp6_hdr) - sizeof(struct ip6_hdr) - 48) / 16) * 16)
 
-char *FOO = NULL;
-
 std::map<int, std::vector<char>> RECEIVE_BUFFER;
-char *FILE_NAME = NULL;
-int FILE_SIZE = 0;
+char *FILE_NAME = nullptr;
 int PACKETS_RECEIVED = 0;
 int PACKETS_SENT = 0;
 
@@ -149,7 +143,7 @@ void save_payload(uint16_t data_size, uint32_t id, const char *payload) {
 
 void init_filename(char *payload) {
     FILE_NAME = (char *) (calloc(1, strlen(payload)));
-    if (FILE_NAME == NULL) {
+    if (FILE_NAME == nullptr) {
         exit_error("Error: Couldn't allocate server buffers!\n");
     }
     memcpy(FILE_NAME, basename(payload), strlen(basename(payload)));
@@ -188,21 +182,21 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
     // Points to the beginning of the IP header.
     // Capturing on 'any' device causes pcap to replace a 14B ethernet header with a
     // 16B 'cooked header'. This skips the header and gets to the start of the IP header
-    uint8_t *iphdr_start = (uint8_t *) (data + 16);
+    auto *iphdr_start = (uint8_t *) (data + 16);
     // Gets the first 8 bits of the IP header, applies a mask to extract
     // the first 4 bits ( 240d == 11110000b ) and shifts it to get the first
     // 4 bits as a number
     uint8_t protocol_version = (240 & *iphdr_start) >> 4;
     uint32_t id = 0;
     uint16_t payload_len = 0;
-    char *payload = NULL;
+    char *payload = nullptr;
     int packet_code = 0;
     int packet_type = 0;
 
     if (protocol_version == 4) {
-        struct iphdr *iphdr = (struct iphdr *) (data + 16);
+        auto *iphdr = (struct iphdr *) (data + 16);
         if (iphdr->protocol == 1) {
-            icmpv4_packet *packet = (icmpv4_packet *) (((char *) iphdr) + sizeof(struct iphdr));
+            auto *packet = (icmpv4_packet *) (((char *) iphdr) + sizeof(struct iphdr));
             id = packet->id;
             payload_len = packet->payload_len;
             payload = packet->data;
@@ -211,12 +205,11 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
             if (packet_type != ICMP_ECHO) {
                 return;
             }
-            std::cout << "IPv4\n";
         }
     } else if (protocol_version == 6) {
-        struct ip6_hdr *ip6hdr = (struct ip6_hdr *) (data + 16);
+        auto *ip6hdr = (struct ip6_hdr *) (data + 16);
         if (ip6hdr->ip6_ctlun.ip6_un1.ip6_un1_nxt == 58) {
-            icmpv6_packet *packet = (icmpv6_packet *) (((char *) ip6hdr) + sizeof(struct ip6_hdr));
+            auto *packet = (icmpv6_packet *) (((char *) ip6hdr) + sizeof(struct ip6_hdr));
             id = packet->id;
             payload_len = packet->payload_len;
             payload = packet->data;
@@ -251,8 +244,8 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
 
         RECEIVE_BUFFER.clear();
         free(FILE_NAME);
-        FILE_NAME = NULL;
-        printf("RECEVIED%d\n", PACKETS_RECEIVED);
+        FILE_NAME = nullptr;
+        printf("RECEIVED%d\n", PACKETS_RECEIVED);
         PACKETS_RECEIVED = 0;
     } else {
         printf("Packet #%d \n", PACKETS_RECEIVED);
@@ -264,12 +257,12 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
  * Represents the behavior of a server. Contains the main loop of the server
  */
 void server() {
-    pcap_t *device = NULL;
+    pcap_t *device = nullptr;
     char errbuf[PCAP_ERRBUF_SIZE];
-    struct bpf_program filter;
+    struct bpf_program filter{};
 
     device = pcap_open_live("any", 65535, 1, 1000, errbuf);
-    if (device == NULL) {
+    if (device == nullptr) {
         fprintf(stderr, "Error: Pcap live open failed! [%s]\n", errbuf);
         exit(1);
     }
@@ -281,7 +274,7 @@ void server() {
         exit_error("Error: Couldn't apply filter!\n");
     }
     printf("Started sniffing\n");
-    pcap_loop(device, -1, handle_packet, NULL);
+    pcap_loop(device, -1, handle_packet, nullptr);
 }
 
 /*****************************************************
@@ -407,7 +400,7 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
                                   icmpv6_packet packet_v6, size_t file_size) {
     // Iterate through all addresses returned by getaddrinfo() and try to send the first packet
     // which contains metadata about the file (name and number of packets)
-    for (; server_address != NULL; server_address = server_address->ai_next) {
+    for (; server_address != nullptr; server_address = server_address->ai_next) {
         int res = 0;
         if (server_address->ai_family == AF_INET) {
             // IPv4 address
@@ -459,15 +452,15 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
  * @return Success
  */
 int client(const char *file, const char *host, int send_delay) {
-    struct addrinfo hints;
+    struct addrinfo hints{};
     memset(&hints, 0, sizeof(struct addrinfo));
     // Support IPv4 and IPv6 addresses
-    hints.ai_family = AF_INET;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_RAW;
 
-    struct addrinfo *server_address = NULL;
+    struct addrinfo *server_address = nullptr;
     // Get the server IP address from entered hostname/IP
-    if ((getaddrinfo(host, NULL, &hints, &server_address)) != 0) {
+    if ((getaddrinfo(host, nullptr, &hints, &server_address)) != 0) {
         exit_error("Error: getaddrinfo() failed!\n");
     }
 
@@ -490,7 +483,7 @@ int client(const char *file, const char *host, int send_delay) {
 
     // Open the source file
     FILE *input_file = fopen(file, "rb");
-    if (input_file == NULL) {
+    if (input_file == nullptr) {
         exit_error("Error: Couldn't open file!\n");
     }
 
@@ -500,7 +493,7 @@ int client(const char *file, const char *host, int send_delay) {
     // Send the first packet, containing file name and file size
     server_address = send_meta_packet(file, server_address, sock_ipv4, sock_ipv6, packet_v4, packet_v6, file_size);
 
-    if (server_address == NULL) {
+    if (server_address == nullptr) {
         exit_error("Error: Couldn't reach the server!\n");
     }
 
@@ -556,8 +549,8 @@ int client(const char *file, const char *host, int send_delay) {
 int main(int argc, char *argv[]) {
     // Determines whether the program is being executed as a client or server
     int LISTEN_MODE = 0;
-    char *file = NULL;
-    char *host = NULL;
+    char *file = nullptr;
+    char *host = nullptr;
     int send_delay = 0;
 
     parse_arguments(argc, argv, &LISTEN_MODE, &file, &host, &send_delay);
@@ -568,27 +561,5 @@ int main(int argc, char *argv[]) {
     }
 
     client(file, host, send_delay);
-
-    // AES encryption
-//    const unsigned char message[] = "Hello, world!";
-//    const unsigned char user_key[] = "xjanus11";
-//
-//    auto *out = static_cast<unsigned char *>(calloc(1, 150));
-//
-//    AES_KEY enc_key;
-//    AES_KEY dec_key;
-//
-//    AES_set_encrypt_key(user_key, 128, &enc_key);
-//    AES_set_decrypt_key(user_key, 128, &dec_key);
-//
-//    AES_encrypt(message, out, &enc_key);
-//    printf("Encrypted: %s\n", out);
-//
-//    AES_decrypt(out, out, &dec_key);
-//
-//    printf("Decrypted: %s\n", out);
-
-
-
     return 0;
 }
