@@ -144,7 +144,7 @@ void save_payload(uint16_t data_size, uint32_t id, const char *payload) {
     for (uint32_t i = 0; i < data_size; i++) {
         buff.push_back(payload[i]);
     }
-    RECEIVE_BUFFER.insert({ id, buff });
+    RECEIVE_BUFFER.insert({id, buff});
 }
 
 void init_filename(char *payload) {
@@ -158,24 +158,20 @@ void init_filename(char *payload) {
 void decrypt_save_rec_buff(int difference, uint32_t id, std::ofstream &output) {
     AES_KEY dec_key;
     AES_set_decrypt_key(USER_KEY, 128, &dec_key);
-    for (auto & data_block : RECEIVE_BUFFER)
-    {
-        std::string data_string (data_block.second.begin(), data_block.second.end());
-        char * data_raw = const_cast<char *>(data_string.c_str());
-        for (int i = data_string.size() ; i > 0; i -= 16)
-        {
+    for (auto &data_block : RECEIVE_BUFFER) {
+        std::string data_string(data_block.second.begin(), data_block.second.end());
+        char *data_raw = const_cast<char *>(data_string.c_str());
+        for (int i = data_string.size(); i > 0; i -= 16) {
             int len = 16;
             char decrypted[16] = {};
             unsigned char temp[16] = {};
 
-            if (id == data_block.first && i <= 16)
-            {
+            if (id == data_block.first && i <= 16) {
                 len = 16 - difference;
             }
             memcpy(temp, data_raw + (data_string.size() - i), 16);
             AES_decrypt(temp, reinterpret_cast<unsigned char *>(decrypted), &dec_key);
-            for (int j = 0; j < len; j++)
-            {
+            for (int j = 0; j < len; j++) {
                 output << decrypted[j];
             }
         }
@@ -217,8 +213,7 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
             }
             std::cout << "IPv4\n";
         }
-    } else if (protocol_version == 6)
-    {
+    } else if (protocol_version == 6) {
         struct ip6_hdr *ip6hdr = (struct ip6_hdr *) (data + 16);
         if (ip6hdr->ip6_ctlun.ip6_un1.ip6_un1_nxt == 58) {
             icmpv6_packet *packet = (icmpv6_packet *) (((char *) ip6hdr) + sizeof(struct ip6_hdr));
@@ -227,22 +222,18 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
             payload = packet->data;
             packet_code = packet->header.icmp6_code;
             packet_type = packet->header.icmp6_type;
-            if (packet_type != ICMP6_ECHO_REQUEST){
+            if (packet_type != ICMP6_ECHO_REQUEST) {
                 return;
             }
         }
-    }
-    else
-    {
+    } else {
         return;
     }
 
     PACKETS_RECEIVED++;
-    if (packet_code == START_TRANSMISSION)
-    {
+    if (packet_code == START_TRANSMISSION) {
         init_filename(payload);
-    } else if (packet_code == END_TRANSMISSION)
-    {
+    } else if (packet_code == END_TRANSMISSION) {
 
 
         uint16_t padded_payload_len = ((payload_len) / 16) * 16 + 16;
@@ -331,7 +322,8 @@ void encrypt_data_block(size_t n_of_bytes, const char *buff, AES_KEY enc_key, in
  * @param buff Buffer containing n_of_bytes bytes of data from the input file
  * @return Prepared Ipv4 packet
  */
-icmpv4_packet prepare_packet_v4(icmpv4_packet packet_v4, size_t file_size, size_t n_of_bytes, const char *buff, bool encrypt) {
+icmpv4_packet
+prepare_packet_v4(icmpv4_packet packet_v4, size_t file_size, size_t n_of_bytes, const char *buff, bool encrypt) {
 
     // Contains the size of the current message
     packet_v4.payload_len = n_of_bytes;
@@ -548,7 +540,7 @@ int client(const char *file, const char *host, int send_delay) {
             usleep(1000 * send_delay);
             memset(&packet_v6.data, 0, max_data_len);
         }
-        // Neither IPv4 nor IPv6
+            // Neither IPv4 nor IPv6
         else {
             exit_error("Error: Invalid IP version of desired server!\n");
         }
