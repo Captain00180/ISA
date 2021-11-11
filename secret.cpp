@@ -1,3 +1,11 @@
+/**
+ * @file secret.cpp
+ * @author Filip Januska (xjanus11)
+ *
+ * Implementation of ISA project
+ * FIT VUT 2021/2022
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +24,6 @@
 #include <vector>
 #include <map>
 #include <iostream>
-#include <thread>
 #include <string>
 
 /*****************************************************
@@ -38,7 +45,6 @@
 // Contains pairs of <packet_id : encrypted_packet_data>
 std::map<int, std::vector<char>> RECEIVE_BUFFER;
 char *FILE_NAME = nullptr;
-int PACKETS_RECEIVED = 0;
 int PACKETS_SENT = 0;
 
 // AES key
@@ -79,15 +85,14 @@ void exit_error(const char *msg) {
  * @param file Is set to the name of the input file
  * @param host Is set to the hostname/ip address of the server
  */
-void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char **host, int *delay) {
+void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char **host) {
     int r_flag = 0;
     int s_flag = 0;
     int l_flag = 0;
-    int d_flag = 0;
     int c;
     opterr = 0;
 
-    while ((c = getopt(argc, argv, "r:s:ld:")) != -1) {
+    while ((c = getopt(argc, argv, "r:s:l")) != -1) {
         switch (c) {
             case 'r':
                 r_flag = 1;
@@ -100,21 +105,16 @@ void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char
             case 'l':
                 l_flag = 1;
                 break;
-            case 'd':
-                d_flag = 1;
-                *delay = std::stoi(optarg);
-                break;
             default:
+                printf("usage: secret -r FILE -s SERVER [-l]\n");
                 exit_error("Error; Unexpected argument!\n");
         }
     }
     //'-r' and '-s' options are required
     if (!l_flag && (!r_flag || !s_flag)) {
+        printf("usage: secret -r FILE -s SERVER [-l]\n");
         exit_error("Error: Missing arguments!\n");
     }
-
-    if (d_flag)
-        printf("Delay = %d\n", *delay);
 
     *LISTEN_MODE = l_flag;
 }
@@ -179,7 +179,7 @@ void decrypt_save_rec_buff(int difference, uint32_t id, std::ofstream &output) {
 
         // Holds the encrypted packet data in a string form
         std::string data_string(data_block.second.begin(), data_block.second.end());
-        // Pointer to the data to provide pointer arithmetics
+        // Pointer to the data needed for pointer arithmetics
         char *data_raw = const_cast<char *>(data_string.c_str());
         for (int i = data_string.size(); i > 0; i -= 16) {
             // Iterate through the packet data in 16-sized steps
@@ -262,7 +262,6 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
         return;
     }
 
-    PACKETS_RECEIVED++;
     if (packet_code == START_TRANSMISSION) {
         // First packet of the transmission
         init_filename(payload);
@@ -291,10 +290,7 @@ void handle_packet(u_char *user, const struct pcap_pkthdr *header, const u_char 
         RECEIVE_BUFFER.clear();
         free(FILE_NAME);
         FILE_NAME = nullptr;
-        printf("RECEIVED%d\n", PACKETS_RECEIVED);
-        PACKETS_RECEIVED = 0;
     } else {
-        //printf("Packet #%d \n", PACKETS_RECEIVED);
         save_payload(payload_len, id, payload);
     }
 }
@@ -319,7 +315,6 @@ void server() {
     if (pcap_setfilter(device, &filter) == -1) {
         exit_error("Error: Couldn't apply filter!\n");
     }
-    printf("Started sniffing\n");
     pcap_loop(device, -1, handle_packet, nullptr);
 }
 
@@ -364,6 +359,7 @@ void encrypt_data_block(const char *buff, AES_KEY enc_key, unsigned char *encryp
  * @param file_size Size of the file to be sent
  * @param n_of_bytes Number of bytes of data from the input file, which this packet will hold
  * @param buff Buffer containing n_of_bytes bytes of data from the input file
+ * @param encrypt Whether to encrypt the data or not
  * @return Prepared Ipv4 packet
  */
 icmpv4_packet fill_packet_v4(icmpv4_packet packet_v4, size_t file_size, size_t n_of_bytes, const char *buff, bool encrypt) {
@@ -500,7 +496,7 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
  * @param host Hostname/IP address of the server
  * @return Success
  */
-void client(const char *file, const char *host, int send_delay) {
+void client(const char *file, const char *host) {
     struct addrinfo hints{};
     memset(&hints, 0, sizeof(struct addrinfo));
     // Support IPv4 and IPv6 addresses
@@ -572,7 +568,6 @@ void client(const char *file, const char *host, int send_delay) {
 
             // Delay the next packet by (send_delay / 1000) ms, if -d parameter was specified. Default is 0
             // This helps if the server isn't able to catch all packets as they come too fast
-            usleep(1000 * send_delay);
             memset(&packet_v4.data, 0, max_data_len);
         }
             // IPv6
@@ -585,11 +580,9 @@ void client(const char *file, const char *host, int send_delay) {
 
             // Delay the next packet by (send_delay / 1000) ms, if -d parameter was specified. Default is 0
             // This helps if the server isn't able to catch all packets as they come too fast
-            usleep(1000 * send_delay);
             memset(&packet_v6.data, 0, max_data_len);
         }
     }
-    //printf("%d\n", PACKETS_SENT);
     fclose(input_file);
 }
 
@@ -601,15 +594,14 @@ int main(int argc, char *argv[]) {
     int LISTEN_MODE = 0;
     char *file = nullptr;
     char *host = nullptr;
-    int send_delay = 0;
 
-    parse_arguments(argc, argv, &LISTEN_MODE, &file, &host, &send_delay);
+    parse_arguments(argc, argv, &LISTEN_MODE, &file, &host);
 
     if (LISTEN_MODE) {
         server();
         return EXIT_SUCCESS;
     }
 
-    client(file, host, send_delay);
+    client(file, host);
     return EXIT_SUCCESS;
 }

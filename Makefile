@@ -5,7 +5,7 @@ CPLIBS = -lssl -lcrypto -lpcap -pthread
 all: secret
 
 secret: secret.cpp
-	$(CXX) $(CPFLAGS) $(CPLIBS) -o secret secret.cpp
+	$(CXX) $(CPFLAGS)  -o secret secret.cpp $(CPLIBS)
 
 clean:
 	rm -rf *.o secret
