@@ -85,14 +85,15 @@ void exit_error(const char *msg) {
  * @param file Is set to the name of the input file
  * @param host Is set to the hostname/ip address of the server
  */
-void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char **host) {
+void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char **host, int *delay) {
     int r_flag = 0;
     int s_flag = 0;
     int l_flag = 0;
+    int d_flag = 0;
     int c;
     opterr = 0;
 
-    while ((c = getopt(argc, argv, "r:s:l")) != -1) {
+    while ((c = getopt(argc, argv, "r:s:ld:")) != -1) {
         switch (c) {
             case 'r':
                 r_flag = 1;
@@ -104,6 +105,10 @@ void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char
                 break;
             case 'l':
                 l_flag = 1;
+                break;
+            case 'd':
+                d_flag = 1;
+                *delay = std::stoi(optarg);
                 break;
             default:
                 printf("usage: secret -r FILE -s SERVER [-l]\n");
@@ -568,6 +573,7 @@ void client(const char *file, const char *host) {
 
             // Delay the next packet by (send_delay / 1000) ms, if -d parameter was specified. Default is 0
             // This helps if the server isn't able to catch all packets as they come too fast
+            usleep(send_delay);
             memset(&packet_v4.data, 0, max_data_len);
         }
             // IPv6
@@ -580,6 +586,7 @@ void client(const char *file, const char *host) {
 
             // Delay the next packet by (send_delay / 1000) ms, if -d parameter was specified. Default is 0
             // This helps if the server isn't able to catch all packets as they come too fast
+            usleep(send_delay);
             memset(&packet_v6.data, 0, max_data_len);
         }
     }
@@ -594,14 +601,15 @@ int main(int argc, char *argv[]) {
     int LISTEN_MODE = 0;
     char *file = nullptr;
     char *host = nullptr;
+    int send_delay = 0;
 
-    parse_arguments(argc, argv, &LISTEN_MODE, &file, &host);
+    parse_arguments(argc, argv, &LISTEN_MODE, &file, &host, &send_delay);
 
     if (LISTEN_MODE) {
         server();
         return EXIT_SUCCESS;
     }
 
-    client(file, host);
+    client(file, host, send_delay);
     return EXIT_SUCCESS;
 }
