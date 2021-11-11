@@ -111,13 +111,13 @@ void parse_arguments(int argc, char *argv[], int *LISTEN_MODE, char **file, char
                 *delay = std::stoi(optarg);
                 break;
             default:
-                printf("usage: secret -r FILE -s SERVER [-l]\n");
+                printf("usage: secret -r FILE -s SERVER [-l] [-d DELAY]\n");
                 exit_error("Error; Unexpected argument!\n");
         }
     }
     //'-r' and '-s' options are required
     if (!l_flag && (!r_flag || !s_flag)) {
-        printf("usage: secret -r FILE -s SERVER [-l]\n");
+        printf("usage: secret -r FILE -s SERVER [-l] [-d DELAY]\n");
         exit_error("Error: Missing arguments!\n");
     }
 
