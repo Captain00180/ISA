@@ -501,7 +501,7 @@ struct addrinfo *send_meta_packet(const char *file, struct addrinfo *server_addr
  * @param host Hostname/IP address of the server
  * @return Success
  */
-void client(const char *file, const char *host) {
+void client(const char *file, const char *host, int send_delay) {
     struct addrinfo hints{};
     memset(&hints, 0, sizeof(struct addrinfo));
     // Support IPv4 and IPv6 addresses
